@@ -19,27 +19,42 @@ namespace TradingAPI
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            using var scope = _serviceProvider.CreateScope();
-            var _orderingContext = scope.ServiceProvider.GetService<TradingDbContext>();
-            var messages = await _orderingContext.Set<OutBoxMessage>().Where(m => m.ProceddedOnUtc == null)
-                .Take(10).ToListAsync(stoppingToken);
-            foreach (var message in messages)
+            while (!stoppingToken.CanBeCanceled)
             {
-                if (string.IsNullOrEmpty(message.Content))
-                    continue;
-                var retries = 3;
-                var retry = Policy.Handle<Exception>()
-                    .WaitAndRetry(
-                    retries,
-                    retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
-                    (exception, timeSpan, retry, ctx) =>
+                try
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var _orderingContext = scope.ServiceProvider.GetService<TradingDbContext>();
+                    var messages = await _orderingContext.Set<OutBoxMessage>().Where(m => m.ProceddedOnUtc == null)
+                        .Take(10).ToListAsync(stoppingToken);
+                    foreach (var message in messages)
                     {
-                        Console.WriteLine($"发布时间失败:{message}");
-                    });
-                retry.Execute(() => _publisher.Publish(new { Content=message.Content,Id = message.Id }, exchange: "RabbitMQ.EventBus.Simple", routingKey: "rabbitmq.eventbus.test"));
-                message.ProceddedOnUtc = DateTime.UtcNow;
+                        if (string.IsNullOrEmpty(message.Content))
+                            continue;
+                        var retries = 3;
+                        var retry = Policy.Handle<Exception>()
+                            .WaitAndRetry(
+                            retries,
+                            retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
+                            (exception, timeSpan, retry, ctx) =>
+                            {
+                                Console.WriteLine($"发布时间失败:{message}");
+                            });
+                        retry.Execute(() => _publisher.Publish(new { Content = message.Content, Id = message.Id }, exchange: "RabbitMQ.EventBus.Simple", routingKey: "rabbitmq.eventbus.test"));
+                        message.ProceddedOnUtc = DateTime.UtcNow;
+                    }
+                    await _orderingContext.SaveChangesAsync(stoppingToken);
+                }
+                catch(Exception ex)
+                {
+                    Console.WriteLine(ex.Message);
+                }
+                finally
+                {
+                    await Task.Delay(1000*60*5);
+                }
             }
-            await _orderingContext.SaveChangesAsync(stoppingToken);
+         
         }
     }
 }
